@@ -8,9 +8,11 @@
  ********************************************************* {COPYRIGHT-END} **/
 package com.sourcepatch.ctviz;
 
+import java.io.BufferedReader;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,9 +23,13 @@ import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.logging.Level;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 
 import javax.xml.bind.JAXBContext;
@@ -59,6 +65,10 @@ public class App {
 	private static final String VERTEX_PROPERTY_CONDITION_NAME = "condition_name";
 	private static final String VERTEX_PROPERTY_SPONSOR_NAME = "sponsor_name";
 
+	private Map<String, String> cuiDisease = new TreeMap<>();
+	private Map<String, String> diseaseCui = new TreeMap<>();
+	private Map<String, String> nctConditionDisease = new TreeMap<>();
+
 	/*
 	 * Ensuring default logging properties are loaded
 	 */
@@ -93,14 +103,40 @@ public class App {
 	 */
 	public static void main(String[] args) throws Exception {
 		App app = new App();
-		Graph g = app.generateGraph(args[0]);
 
+		app.loadConditionMaps();
+
+		Graph g = app.generateGraph(args[0]);
 		Path outGraph = Paths.get("out/ctgraph.graphml");
 		Files.createDirectories(outGraph.getParent());
 		GraphMLWriter gmlWriter = GraphMLWriter.build().create();
 		gmlWriter.writeGraph(new FileOutputStream(outGraph.toFile()), g);
 
 		LOG.info("Output graph written to " + outGraph.toFile().getAbsolutePath());
+	}
+
+	/**
+	 * 
+	 * @throws IOException
+	 */
+	public void loadConditionMaps() throws IOException {
+		try (ZipFile zf = new ZipFile("src/main/resources/MRCONSO.conditions.zip")) {
+			ZipEntry entry = zf.getEntry("dsyn.rrf");
+			InputStream zis = zf.getInputStream(entry);
+			BufferedReader br = new BufferedReader(new InputStreamReader(zis));
+
+			String line = null;
+			while ((line = br.readLine()) != null) {
+				String[] tokens = line.split("\\|");
+				String cui = tokens[0];
+				String preferredName = tokens[14];
+
+				cuiDisease.put(cui, preferredName);
+				diseaseCui.put(preferredName, cui);
+			}
+		}
+		LOG.info("Loaded condition maps. Unique concepts:" + cuiDisease.size() + " Unique surface forms:"
+				+ diseaseCui.size());
 	}
 
 	/**
@@ -293,9 +329,50 @@ public class App {
 		return sv;
 	}
 
+	/**
+	 * 
+	 * @param c
+	 * @return
+	 */
 	private String getNormalizedConditionName(String c) {
-		String c2 = c.replaceAll("-", " ").toLowerCase();
-		return c2;
+		String c3 = nctConditionDisease.get(c);
+		if (c3 == null) {
+			String c2 = c.replaceAll("-", " ").toLowerCase();
+
+			String cLowerCase = c.toLowerCase();
+			for (String surfaceForm : diseaseCui.keySet()) {
+				if (surfaceForm.equals(surfaceForm.toUpperCase())) {
+					continue;
+				}
+				try {
+					String sfLowerCase = surfaceForm.toLowerCase();
+					int sfIndex = cLowerCase.indexOf(sfLowerCase);
+					if (sfIndex > -1) {
+						if (cLowerCase.length() == sfLowerCase.length()
+								|| (sfIndex == 0 && cLowerCase.charAt(sfLowerCase.length()) == ' ')
+								|| (sfIndex > 0 && sfIndex + sfLowerCase.length() == cLowerCase.length()
+										&& cLowerCase.charAt(sfIndex - 1) == ' ')
+								|| (sfIndex > 0 && cLowerCase.charAt(sfIndex - 1) == ' '
+										&& cLowerCase.charAt(sfIndex + sfLowerCase.length()) == ' ')) {
+							if (c3 == null || surfaceForm.length() > c3.length()) {
+								c3 = surfaceForm;
+							}
+						}
+					}
+				} catch (StringIndexOutOfBoundsException e) {
+					LOG.log(Level.WARNING, "ugh::" + c + " ::" + surfaceForm, e);
+				}
+			}
+			if (c3 == null) {
+				c3 = c2;
+			}
+			nctConditionDisease.put(c, c3);
+		}
+		if (LOG.isLoggable(Level.FINER)) {
+			LOG.finer(c + " :: " + c3);
+		}
+
+		return c3;
 	}
 
 	private String getStringOrEmpty(String parm) {

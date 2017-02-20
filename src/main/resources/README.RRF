@@ -1,0 +1,12 @@
+This is an interim solution to cover just a few UMLS types related to clinical trial conditions.
+
+A proper concept detection services would be required to classify the entire text span of a condition into all the various 
+UMLS concepts.
+
+In order to generate the MRCONSO.conditions.zip file:
+
+grep -e "Disease or Syndrome\|Sign or Symptom\|Neoplastic Process" MRSTY.RRF > MRSTY.conditions.RRF
+cat MRSTY.conditions.RRF | cut -d "|" -f 1 | sort | uniq > cui.conditions.csv
+
+Modify GenerateConditionsRRF.java to indicate the location of the UMLS MRCONSO.RRF file and run it.
+It will produe MRCONSO.conditions.zip
