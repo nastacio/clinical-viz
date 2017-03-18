@@ -76,21 +76,12 @@ import com.sourcepatch.ctviz.ctgov.StudyTypeEnum;
  */
 public class App {
 
-	private static final String VERTEX_PROPERTY_INTERVENTION_NAME = "intervention_name";
-	private static final String VERTEX_PROPERTY_CONDITION_RAW = "nct_condition";
-	private static final String VERTEX_PROPERTY_LOCATION_FULL_ADDRESS = "location_full_address";
-	private static final String VERTEX_PROPERTY_CONDITION_NAME = "condition_name";
-	private static final String VERTEX_PROPERTY_SPONSOR_NAME = "sponsor_name";
-
 	private static final String NCT_DATE_PATTERN_1 = "MMMMM yyyy";
 	private static final String NCT_DATE_PATTERN_2 = "MMMMM dd, yyyy";
 	private static final SimpleDateFormat NCT_DATE_FORMAT_1 = new SimpleDateFormat(NCT_DATE_PATTERN_1);
 	private static final SimpleDateFormat NCT_DATE_FORMAT_2 = new SimpleDateFormat(NCT_DATE_PATTERN_2);
 
-<<<<<<< HEAD
 	private Map<String, String> stateAbbrev = new TreeMap<>();
-=======
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 	private Map<String, String> cuiDisease = new TreeMap<>();
 	private Map<String, String> diseaseCui = new TreeMap<>();
 	private Map<String, String> nctConditionDisease = new TreeMap<>();
@@ -164,7 +155,6 @@ public class App {
 
 		Path outConditionPhrases = Paths.get("out/ct.condition.phrases.txt");
 		try (PrintWriter pw = new PrintWriter(outConditionPhrases.toFile())) {
-<<<<<<< HEAD
 			g.getNodes().toCollection().stream()
 					.filter(n -> n.getAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_RAW) != null)
 					.forEach(n -> pw.println(n.getAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_RAW) + " ."));
@@ -187,19 +177,6 @@ public class App {
 	public void init() throws Exception {
 		loadConditionMaps();
 		loadStateAbbrebiationMap();
-=======
-			g.traversal().V().has(VERTEX_PROPERTY_CONDITION_RAW)
-					.forEachRemaining(v -> pw.println(v.value(VERTEX_PROPERTY_CONDITION_RAW).toString() + " ."));
-		}
-
-		Path outInterventionPhrases = Paths.get("out/ct.intervention.phrases.txt");
-		try (PrintWriter pw = new PrintWriter(outInterventionPhrases.toFile())) {
-			g.traversal().V().has(VERTEX_PROPERTY_INTERVENTION_NAME)
-					.forEachRemaining(v -> pw.println(v.value(VERTEX_PROPERTY_INTERVENTION_NAME).toString() + " ."));
-		}
-
-		LOG.info("Output conditions written to " + outConditionPhrases.toFile().getAbsolutePath());
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 	}
 
 	/**
@@ -373,7 +350,6 @@ public class App {
 		String genderStr = studyEligibility.getGender().toString();
 		String minAge = studyEligibility.getMinimumAge();
 		String maxAge = studyEligibility.getMaximumAge();
-<<<<<<< HEAD
 		Node ctVertex = gm.factory().newNode();
 
 		ctVertex.setLabel(GraphSchema.VERTEX_LABEL_TRIAL);
@@ -412,29 +388,6 @@ public class App {
 				testsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_INTERVENTION_TYPE,
 						intv.getInterventionType().toString());
 				g.addEdge(testsEdge);
-=======
-		Vertex ctVertex = g.addVertex(T.label, "trial", "study_id", nctId, "org_study_id", orgStudyId, "title",
-				briefTitle, "overall_status", overallStatus, "phase", phase, "study_type", studyType, "enrollment",
-				enrollment, "gender", genderStr, "minAge", minAge, "maxAge", maxAge);
-
-		StudyDesignInfoStruct designInfo = study.getStudyDesignInfo();
-		if (designInfo != null) {
-			String interventionModel = getStringOrEmpty(designInfo.getInterventionModel());
-			String primaryPurpose = getStringOrEmpty(designInfo.getPrimaryPurpose());
-			String masking = getStringOrEmpty(designInfo.getMasking());
-
-			ctVertex.property("intervention_model", interventionModel);
-			ctVertex.property("primary_purpose", primaryPurpose);
-			ctVertex.property("masking", masking);
-		}
-
-		if (study.getStudyType().equals(StudyTypeEnum.INTERVENTIONAL)) {
-			List<InterventionStruct> interventions = study.getIntervention();
-			for (InterventionStruct intv : interventions) {
-				Vertex interventionVertex = getOrCreateIntervention(g, intv);
-				ctVertex.addEdge("tests", interventionVertex, "intervention_type",
-						intv.getInterventionType().toString());
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 			}
 		}
 
@@ -445,11 +398,7 @@ public class App {
 				if (startYear < 1900) {
 					LOG.warning(nctId + " has a likely invalid start year: " + startDateStr);
 				} else {
-<<<<<<< HEAD
 					ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_START_YEAR, startYear);
-=======
-					ctVertex.property("start_year", startYear);
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 				}
 			} catch (ParseException e) {
 				LOG.warning(nctId + " does not have a valid start year: " + startDateStr);
@@ -466,7 +415,6 @@ public class App {
 		// sponsor -> condition
 		// sponsor -> trial
 		studyConditions.forEach(c -> {
-<<<<<<< HEAD
 			Node conditionVertex = getOrCreateConditionVertex(gm, c);
 			Edge researchesEdge = gm.factory().newEdge(sv, conditionVertex, true);
 			researchesEdge.setLabel(GraphSchema.EDGE_LABEL_RESEARCHES);
@@ -479,11 +427,6 @@ public class App {
 			sponsorsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_SPONSORS);
 			sponsorsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
 			g.addEdge(sponsorsEdge);
-=======
-			Vertex conditionVertex = getOrCreateConditionVertex(g, c);
-			sv.addEdge("researches", conditionVertex, "nct", nctId);
-			sv.addEdge("sponsors", ctVertex, "nct", nctId);
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 		});
 
 		study.getSponsors().getCollaborator().forEach(collabAgency -> {
@@ -508,7 +451,6 @@ public class App {
 			// collaborators -> condition
 			// collaborators -> trial
 			studyConditions.forEach(c -> {
-<<<<<<< HEAD
 				Node conditionVertex = getOrCreateConditionVertex(gm, c);
 
 				Edge researchesEdge = gm.factory().newEdge(collabVertex, conditionVertex, true);
@@ -517,28 +459,13 @@ public class App {
 				researchesEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
 				g.addEdge(researchesEdge);
 
-=======
-				Vertex conditionVertex = getOrCreateConditionVertex(g, c);
-				collabVertex.addEdge("researches", conditionVertex, "nct", nctId);
-				collabVertex.addEdge("cosponsors", ctVertex, "nct", nctId);
-				ctVertex.addEdge("covers", conditionVertex);
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 			});
 
-<<<<<<< HEAD
 			Edge consponsorEdge = gm.factory().newEdge(collabVertex, ctVertex, true);
 			consponsorEdge.setLabel(GraphSchema.EDGE_LABEL_CONSPONSOR);
 			consponsorEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_CONSPONSOR);
 			consponsorEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
 			g.addEdge(consponsorEdge);
-=======
-			// trial -> locations
-			study.getLocation().forEach(l -> {
-				Vertex locationVertex = getOrCreateLocationVertex(g, l.getFacility());
-				String facilityName = getStringOrEmpty(l.getFacility().getName());
-				ctVertex.addEdge("location", locationVertex, "location_name", facilityName);
-			});
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 
 		});
 
@@ -656,7 +583,6 @@ public class App {
 
 	/**
 	 * 
-<<<<<<< HEAD
 	 * @param gm
 	 * @param intv
 	 * @return
@@ -694,33 +620,7 @@ public class App {
 	private Node getOrCreateConditionVertex(GraphModel gm, String conditionName) {
 		DirectedGraph g = gm.getDirectedGraph();
 
-=======
-	 * @param g
-	 * @param intv
-	 * @return
-	 */
-	private Vertex getOrCreateIntervention(Graph g, InterventionStruct intv) {
-		InterventionTypeEnum iType = intv.getInterventionType();
-		String interventionName = intv.getInterventionName();
-		GraphTraversal<Vertex, Vertex> intvIter = g.traversal().V().has(VERTEX_PROPERTY_INTERVENTION_NAME,
-				interventionName);
-		final Vertex iVt = intvIter.hasNext() ? intvIter.next()
-				: g.addVertex(T.label, "intervention", "intervention_type", iType.toString(),
-						VERTEX_PROPERTY_INTERVENTION_NAME, interventionName);
-		;
-		return iVt;
-	}
-
-	/**
-	 * 
-	 * @param g
-	 * @param conditionName
-	 * @return
-	 */
-	private Vertex getOrCreateConditionVertex(Graph g, String conditionName) {
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 		String c2 = getNormalizedConditionName(conditionName);
-<<<<<<< HEAD
 		Optional<Node> findFirst = g.getNodes().toCollection().stream()
 				.filter(n -> n.getAttributeKeys().contains(GraphSchema.VERTEX_PROPERTY_CONDITION_NAME)
 						&& c2.equals(n.getAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_NAME)))
@@ -737,12 +637,6 @@ public class App {
 			cVt.setAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_NAME, c2);
 			g.addNode(cVt);
 		}
-=======
-		GraphTraversal<Vertex, Vertex> conditionIter = g.traversal().V().has(VERTEX_PROPERTY_CONDITION_NAME, c2);
-		final Vertex cVt = conditionIter.hasNext() ? conditionIter.next()
-				: g.addVertex(T.label, "condition", VERTEX_PROPERTY_CONDITION_RAW, conditionName,
-						VERTEX_PROPERTY_CONDITION_NAME, c2);
->>>>>>> branch 'master' of https://github.com/nastacio/clinical-viz.git
 		return cVt;
 	}
 
