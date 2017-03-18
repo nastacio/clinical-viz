@@ -255,9 +255,10 @@ public class App {
 		int trialCount = 0;
 		try (InputStream is = url.openStream(); ZipInputStream zis = new ZipInputStream(is)) {
 
-			int entries = 10;
+			/* int entries = 10; */
 			ZipEntry ctXmlEntry = null;
-			while ((ctXmlEntry = zis.getNextEntry()) != null && entries-- >= 0) {
+			while ((ctXmlEntry = zis
+					.getNextEntry()) != null /* && entries-- >= 0 */) {
 
 				LOG.info(ctXmlEntry.getName());
 
