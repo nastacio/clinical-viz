@@ -9,7 +9,6 @@
 package com.sourcepatch.ctviz;
 
 import java.io.BufferedReader;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -25,7 +24,9 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
@@ -36,13 +37,27 @@ import java.util.zip.ZipInputStream;
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.Unmarshaller;
 
-import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
-import org.apache.tinkerpop.gremlin.structure.Graph;
-import org.apache.tinkerpop.gremlin.structure.T;
-import org.apache.tinkerpop.gremlin.structure.Vertex;
-import org.apache.tinkerpop.gremlin.structure.io.graphml.GraphMLWriter;
-import org.apache.tinkerpop.gremlin.tinkergraph.structure.TinkerGraph;
+import org.gephi.graph.api.DirectedGraph;
+import org.gephi.graph.api.Edge;
+import org.gephi.graph.api.Graph;
+import org.gephi.graph.api.GraphController;
+import org.gephi.graph.api.GraphModel;
+import org.gephi.graph.api.Node;
+import org.gephi.graph.api.Table;
+import org.gephi.io.exporter.api.ExportController;
+import org.gephi.layout.plugin.AutoLayout;
+import org.gephi.layout.plugin.fruchterman.FruchtermanReingold;
+import org.gephi.project.api.Project;
+import org.gephi.project.api.ProjectController;
+import org.gephi.project.api.Workspace;
+import org.openide.util.Lookup;
 
+import com.google.maps.GeoApiContext;
+import com.google.maps.GeocodingApi;
+import com.google.maps.GeocodingApiRequest;
+import com.google.maps.model.ComponentFilter;
+import com.google.maps.model.GeocodingResult;
+import com.google.maps.model.LatLng;
 import com.sourcepatch.ctviz.ctgov.AddressStruct;
 import com.sourcepatch.ctviz.ctgov.AgencyClassEnum;
 import com.sourcepatch.ctviz.ctgov.ClinicalStudy;
@@ -61,20 +76,25 @@ import com.sourcepatch.ctviz.ctgov.StudyTypeEnum;
  */
 public class App {
 
-	private static final String VERTEX_PROPERTY_INTERVENTION_NAME = "intervention_name";
-	private static final String VERTEX_PROPERTY_CONDITION_RAW = "nct_condition";
-	private static final String VERTEX_PROPERTY_LOCATION_FULL_ADDRESS = "location_full_address";
-	private static final String VERTEX_PROPERTY_CONDITION_NAME = "condition_name";
-	private static final String VERTEX_PROPERTY_SPONSOR_NAME = "sponsor_name";
-
 	private static final String NCT_DATE_PATTERN_1 = "MMMMM yyyy";
 	private static final String NCT_DATE_PATTERN_2 = "MMMMM dd, yyyy";
 	private static final SimpleDateFormat NCT_DATE_FORMAT_1 = new SimpleDateFormat(NCT_DATE_PATTERN_1);
 	private static final SimpleDateFormat NCT_DATE_FORMAT_2 = new SimpleDateFormat(NCT_DATE_PATTERN_2);
 
+	private Map<String, String> stateAbbrev = new TreeMap<>();
 	private Map<String, String> cuiDisease = new TreeMap<>();
 	private Map<String, String> diseaseCui = new TreeMap<>();
 	private Map<String, String> nctConditionDisease = new TreeMap<>();
+	private Map<String, LatLng> locationCoordMap = new TreeMap<>();
+
+	/**
+	 * Google GeoCode API key
+	 * 
+	 * @see https://developers.google.com/maps/documentation/geocoding/intro#geocoding
+	 */
+	private static final String PROPERTY_GOOGLE_MAPS_APIKEY = "google.maps.apikey";
+	private static final GeoApiContext googleGeoContext = new GeoApiContext()
+			.setApiKey(System.getProperty(PROPERTY_GOOGLE_MAPS_APIKEY));
 
 	/*
 	 * Ensuring default logging properties are loaded
@@ -111,29 +131,52 @@ public class App {
 	public static void main(String[] args) throws Exception {
 		App app = new App();
 
-		app.loadConditionMaps();
+		app.init();
 
-		Graph g = app.generateGraph(args[0]);
-		Path outGraph = Paths.get("out/ctgraph.graphml");
+		String searchTerm = args[0];
+		Workspace w = app.generateGraph(searchTerm);
+
+		// See if graph is well imported
+		GraphController graphController = Lookup.getDefault().lookup(GraphController.class);
+		GraphModel gm = graphController.getGraphModel(w);
+		DirectedGraph g = gm.getDirectedGraph();
+
+		// Run Tasks and wait for termination in the current thread
+		// createLayoutRunnable(gm);
+
+		// Export
+		Path outGraph = Paths.get("out/ctgraph.gexf");
 		Files.createDirectories(outGraph.getParent());
-		GraphMLWriter gmlWriter = GraphMLWriter.build().create();
-		gmlWriter.writeGraph(new FileOutputStream(outGraph.toFile()), g);
+
+		ExportController ec = Lookup.getDefault().lookup(ExportController.class);
+		ec.exportFile(outGraph.toFile(), w);
 
 		LOG.info("Output graph written to " + outGraph.toFile().getAbsolutePath());
 
 		Path outConditionPhrases = Paths.get("out/ct.condition.phrases.txt");
 		try (PrintWriter pw = new PrintWriter(outConditionPhrases.toFile())) {
-			g.traversal().V().has(VERTEX_PROPERTY_CONDITION_RAW)
-					.forEachRemaining(v -> pw.println(v.value(VERTEX_PROPERTY_CONDITION_RAW).toString() + " ."));
+			g.getNodes().toCollection().stream()
+					.filter(n -> n.getAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_RAW) != null)
+					.forEach(n -> pw.println(n.getAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_RAW) + " ."));
 		}
 
 		Path outInterventionPhrases = Paths.get("out/ct.intervention.phrases.txt");
 		try (PrintWriter pw = new PrintWriter(outInterventionPhrases.toFile())) {
-			g.traversal().V().has(VERTEX_PROPERTY_INTERVENTION_NAME)
-					.forEachRemaining(v -> pw.println(v.value(VERTEX_PROPERTY_INTERVENTION_NAME).toString() + " ."));
+			g.getNodes().toCollection().stream()
+					.filter(n -> n.getAttribute(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_NAME) != null)
+					.forEach(n -> pw.println(n.getAttribute(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_NAME) + " ."));
 		}
 
 		LOG.info("Output conditions written to " + outConditionPhrases.toFile().getAbsolutePath());
+	}
+
+	/**
+	 * 
+	 * @throws Exception
+	 */
+	public void init() throws Exception {
+		loadConditionMaps();
+		loadStateAbbrebiationMap();
 	}
 
 	/**
@@ -162,12 +205,45 @@ public class App {
 
 	/**
 	 * 
+	 * @throws IOException
+	 */
+	public void loadStateAbbrebiationMap() throws IOException {
+
+		try (InputStream resourceAsStream = getClass().getResourceAsStream("/states.csv");
+				InputStreamReader in = new InputStreamReader(resourceAsStream);
+				BufferedReader br = new BufferedReader(in)) {
+
+			String line = null;
+			while ((line = br.readLine()) != null) {
+				String[] tokens = line.split(",");
+				String expanded = tokens[0];
+				String abbrv = tokens[1];
+
+				stateAbbrev.put(expanded, abbrv);
+			}
+		}
+	}
+
+	/**
+	 * 
 	 * @param searchTerm
 	 * @return
 	 * @throws Exception
 	 */
-	public Graph generateGraph(String searchTerm) throws Exception {
-		Graph g = TinkerGraph.open();
+	public Workspace generateGraph(String searchTerm) throws Exception {
+		// Init a project - and therefore a workspace
+		ProjectController pc = Lookup.getDefault().lookup(ProjectController.class);
+		pc.newProject();
+		Project p = pc.getProjects().getProjects()[0];
+
+		Workspace result = pc.newWorkspace(p);
+
+		GraphController graphController = Lookup.getDefault().lookup(GraphController.class);
+		GraphModel gm = graphController.getGraphModel(result);
+
+		addGraphMetadata(gm);
+
+		Graph g = gm.getGraph();
 
 		String instancePath = "com.sourcepatch.ctviz.ctgov";
 		JAXBContext jc = JAXBContext.newInstance(instancePath);
@@ -179,12 +255,13 @@ public class App {
 		int trialCount = 0;
 		try (InputStream is = url.openStream(); ZipInputStream zis = new ZipInputStream(is)) {
 
+			int entries = 10;
 			ZipEntry ctXmlEntry = null;
-			while ((ctXmlEntry = zis.getNextEntry()) != null) {
+			while ((ctXmlEntry = zis.getNextEntry()) != null && entries-- >= 0) {
 
 				LOG.info(ctXmlEntry.getName());
 
-				Path tf = Files.createTempFile("nct", "xml");
+				Path tf = Files.createTempFile(GraphSchema.EDGE_PROPERTY_NCT_ID, "xml");
 				Files.copy(zis, tf, StandardCopyOption.REPLACE_EXISTING);
 
 				try (InputStream ftf = Files.newInputStream(tf)) {
@@ -192,14 +269,58 @@ public class App {
 					ClinicalStudy study = (ClinicalStudy) obj;
 					Files.delete(tf);
 
-					addStudyToGraph(study, g);
+					addStudyToGraph(study, gm);
 					trialCount++;
 				}
 			}
 		}
 
-		LOG.info("Processed " + trialCount + " clinical trials into graph: " + g.toString());
-		return g;
+		LOG.info("Processed " + trialCount + " clinical trials into graph. Nodes: " + g.getNodeCount() + ". Edges: "
+				+ g.getEdgeCount());
+
+		return result;
+	}
+
+	private void addGraphMetadata(GraphModel gm) {
+		Table nodeTable = gm.getNodeTable();
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_LABEL_V, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_ADDRESS_CITY, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_ADDRESS_STATE, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_ADDRESS_COUNTRY, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_ADDRESS_ZIP, String.class);
+
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_LOCATION_FULL_ADDRESS, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_LOCATION_LATITUDE, Double.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_LOCATION_LONGITUDE, Double.class);
+
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_CONDITION_NAME, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_CONDITION_RAW, String.class);
+
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_STUDY_ID, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_ORG_STUDY_ID, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_TITLE, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_OVERALL_STATUS, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_PHASE, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_STUDY_TYPE, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_ENROLLMENT, Long.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_GENDER, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_MIN_AGE, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_MAX_AGE, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_MASKING, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_PRIMARY_PURPOSE, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_MODEL, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_TYPE, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_NAME, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_NCT_START_YEAR, Integer.class);
+
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_SPONSOR_CLASS, String.class);
+		nodeTable.addColumn(GraphSchema.VERTEX_PROPERTY_SPONSOR_NAME, String.class);
+
+		Table edgeTable = gm.getEdgeTable();
+		edgeTable.addColumn(GraphSchema.EDGE_PROPERTY_LABEL, String.class);
+		edgeTable.addColumn(GraphSchema.EDGE_PROPERTY_LOCATION_NAME, String.class);
+		edgeTable.addColumn(GraphSchema.EDGE_PROPERTY_NCT_ID, String.class);
+		edgeTable.addColumn(GraphSchema.EDGE_PROPERTY_NCT_INTERVENTION_TYPE, String.class);
 	}
 
 	/*
@@ -211,7 +332,7 @@ public class App {
 	 * @param study
 	 * @param g
 	 */
-	private void addStudyToGraph(ClinicalStudy study, Graph g) {
+	private void addStudyToGraph(ClinicalStudy study, GraphModel gm) {
 
 		String nctId = study.getIdInfo().getNctId();
 
@@ -229,9 +350,22 @@ public class App {
 		String genderStr = studyEligibility.getGender().toString();
 		String minAge = studyEligibility.getMinimumAge();
 		String maxAge = studyEligibility.getMaximumAge();
-		Vertex ctVertex = g.addVertex(T.label, "trial", "study_id", nctId, "org_study_id", orgStudyId, "title",
-				briefTitle, "overall_status", overallStatus, "phase", phase, "study_type", studyType, "enrollment",
-				enrollment, "gender", genderStr, "minAge", minAge, "maxAge", maxAge);
+		Node ctVertex = gm.factory().newNode();
+
+		ctVertex.setLabel(GraphSchema.VERTEX_LABEL_TRIAL);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_LABEL_V, GraphSchema.VERTEX_LABEL_TRIAL);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_STUDY_ID, nctId);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_ORG_STUDY_ID, orgStudyId);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_TITLE, briefTitle);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_OVERALL_STATUS, overallStatus);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_PHASE, phase);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_STUDY_TYPE, studyType);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_ENROLLMENT, enrollment);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_GENDER, genderStr);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_MIN_AGE, minAge);
+		ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_MAX_AGE, maxAge);
+		Graph g = gm.getDirectedGraph();
+		g.addNode(ctVertex);
 
 		StudyDesignInfoStruct designInfo = study.getStudyDesignInfo();
 		if (designInfo != null) {
@@ -239,17 +373,21 @@ public class App {
 			String primaryPurpose = getStringOrEmpty(designInfo.getPrimaryPurpose());
 			String masking = getStringOrEmpty(designInfo.getMasking());
 
-			ctVertex.property("intervention_model", interventionModel);
-			ctVertex.property("primary_purpose", primaryPurpose);
-			ctVertex.property("masking", masking);
+			ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_MODEL, interventionModel);
+			ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_PRIMARY_PURPOSE, primaryPurpose);
+			ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_MASKING, masking);
 		}
 
 		if (study.getStudyType().equals(StudyTypeEnum.INTERVENTIONAL)) {
 			List<InterventionStruct> interventions = study.getIntervention();
 			for (InterventionStruct intv : interventions) {
-				Vertex interventionVertex = getOrCreateIntervention(g, intv);
-				ctVertex.addEdge("tests", interventionVertex, "intervention_type",
+				Node interventionVertex = getOrCreateIntervention(gm, intv);
+				Edge testsEdge = gm.factory().newEdge(ctVertex, interventionVertex, true);
+				testsEdge.setLabel(GraphSchema.EDGE_LABEL_TESTS);
+				testsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_TESTS);
+				testsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_INTERVENTION_TYPE,
 						intv.getInterventionType().toString());
+				g.addEdge(testsEdge);
 			}
 		}
 
@@ -260,7 +398,7 @@ public class App {
 				if (startYear < 1900) {
 					LOG.warning(nctId + " has a likely invalid start year: " + startDateStr);
 				} else {
-					ctVertex.property("start_year", startYear);
+					ctVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_START_YEAR, startYear);
 				}
 			} catch (ParseException e) {
 				LOG.warning(nctId + " does not have a valid start year: " + startDateStr);
@@ -270,16 +408,25 @@ public class App {
 		SponsorsStruct ssList = study.getSponsors();
 		String sponsorAgency = ssList.getLeadSponsor().getAgency();
 		AgencyClassEnum agencyClass = ssList.getLeadSponsor().getAgencyClass();
-		final Vertex sv = getOrCreateSponsorVertex(g, sponsorAgency, agencyClass.toString());
+		final Node sv = getOrCreateSponsorVertex(gm, sponsorAgency, agencyClass.toString());
 
 		List<String> studyConditions = study.getCondition();
 
 		// sponsor -> condition
 		// sponsor -> trial
 		studyConditions.forEach(c -> {
-			Vertex conditionVertex = getOrCreateConditionVertex(g, c);
-			sv.addEdge("researches", conditionVertex, "nct", nctId);
-			sv.addEdge("sponsors", ctVertex, "nct", nctId);
+			Node conditionVertex = getOrCreateConditionVertex(gm, c);
+			Edge researchesEdge = gm.factory().newEdge(sv, conditionVertex, true);
+			researchesEdge.setLabel(GraphSchema.EDGE_LABEL_RESEARCHES);
+			researchesEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_RESEARCHES);
+			researchesEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
+			g.addEdge(researchesEdge);
+
+			Edge sponsorsEdge = gm.factory().newEdge(sv, ctVertex, true);
+			sponsorsEdge.setLabel(GraphSchema.EDGE_LABEL_SPONSORS);
+			sponsorsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_SPONSORS);
+			sponsorsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
+			g.addEdge(sponsorsEdge);
 		});
 
 		study.getSponsors().getCollaborator().forEach(collabAgency -> {
@@ -287,32 +434,71 @@ public class App {
 			String collab = collabAgency.getAgency();
 
 			AgencyClassEnum collabClass = collabAgency.getAgencyClass();
-			final Vertex collabVertex = getOrCreateSponsorVertex(g, collab, collabClass.toString());
+			Node collabVertex = getOrCreateSponsorVertex(gm, collab, collabClass.toString());
 
-			sv.addEdge("leads", collabVertex, "nct", nctId);
-			collabVertex.addEdge("collaborates", sv, "nct", nctId);
+			Edge leadsEdge = gm.factory().newEdge(sv, collabVertex, true);
+			leadsEdge.setLabel(GraphSchema.EDGE_LABEL_LEADS);
+			leadsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_LEADS);
+			leadsEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
+			g.addEdge(leadsEdge);
+
+			Edge collabEdge = gm.factory().newEdge(collabVertex, sv, true);
+			collabEdge.setLabel(GraphSchema.EDGE_LABEL_COLLABORATES);
+			collabEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_COLLABORATES);
+			collabEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
+			g.addEdge(collabEdge);
 
 			// collaborators -> condition
 			// collaborators -> trial
-			// trial -> conditions
 			studyConditions.forEach(c -> {
-				Vertex conditionVertex = getOrCreateConditionVertex(g, c);
-				collabVertex.addEdge("researches", conditionVertex, "nct", nctId);
-				collabVertex.addEdge("cosponsors", ctVertex, "nct", nctId);
-				ctVertex.addEdge("covers", conditionVertex);
+				Node conditionVertex = getOrCreateConditionVertex(gm, c);
+
+				Edge researchesEdge = gm.factory().newEdge(collabVertex, conditionVertex, true);
+				researchesEdge.setLabel(GraphSchema.EDGE_LABEL_RESEARCHES);
+				researchesEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_RESEARCHES);
+				researchesEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
+				g.addEdge(researchesEdge);
+
 			});
 
-			// trial -> locations
-			study.getLocation().forEach(l -> {
-				Vertex locationVertex = getOrCreateLocationVertex(g, l.getFacility());
-				String facilityName = getStringOrEmpty(l.getFacility().getName());
-				ctVertex.addEdge("location", locationVertex, "location_name", facilityName);
-			});
+			Edge consponsorEdge = gm.factory().newEdge(collabVertex, ctVertex, true);
+			consponsorEdge.setLabel(GraphSchema.EDGE_LABEL_CONSPONSOR);
+			consponsorEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_CONSPONSOR);
+			consponsorEdge.setAttribute(GraphSchema.EDGE_PROPERTY_NCT_ID, nctId);
+			g.addEdge(consponsorEdge);
 
+		});
+
+		// trial -> conditions
+		studyConditions.forEach(c -> {
+			Node conditionVertex = getOrCreateConditionVertex(gm, c);
+
+			Edge coversEdge = gm.factory().newEdge(ctVertex, conditionVertex, true);
+			coversEdge.setLabel(GraphSchema.EDGE_LABEL_COVERS);
+			coversEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_COVERS);
+			g.addEdge(coversEdge);
+		});
+
+		// trial -> locations
+		study.getLocation().forEach(l -> {
+			Node locationVertex = getOrCreateLocationVertex(gm, l.getFacility());
+			String facilityName = getStringOrEmpty(l.getFacility().getName());
+
+			Edge locationEdge = gm.factory().newEdge(ctVertex, locationVertex, true);
+			locationEdge.setLabel(GraphSchema.EDGE_LABEL_LOCATION);
+			locationEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LABEL, GraphSchema.EDGE_LABEL_LOCATION);
+			locationEdge.setAttribute(GraphSchema.EDGE_PROPERTY_LOCATION_NAME, facilityName);
+			g.addEdge(locationEdge);
 		});
 
 	}
 
+	/**
+	 * 
+	 * @param startDateStr
+	 * @return
+	 * @throws ParseException
+	 */
 	private int getYear(String startDateStr) throws ParseException {
 		Date startDate = NCT_DATE_FORMAT_1.parse(startDateStr);
 		Calendar c = Calendar.getInstance();
@@ -328,11 +514,11 @@ public class App {
 
 	/**
 	 * 
-	 * @param g
+	 * @param gm
 	 * @param facility
 	 * @return
 	 */
-	private Vertex getOrCreateLocationVertex(Graph g, FacilityStruct facility) {
+	private Node getOrCreateLocationVertex(GraphModel gm, FacilityStruct facility) {
 		AddressStruct locationAddress = facility.getAddress();
 
 		String city = getStringOrEmpty(locationAddress.getCity());
@@ -340,58 +526,146 @@ public class App {
 		String zip = getStringOrEmpty(locationAddress.getZip());
 		String country = getStringOrEmpty(locationAddress.getCountry());
 		String locationString = city + " " + state + " " + zip + " " + country;
-		GraphTraversal<Vertex, Vertex> locationIter = g.traversal().V().has(VERTEX_PROPERTY_LOCATION_FULL_ADDRESS,
-				locationString);
-		final Vertex locationVertex = locationIter.hasNext() ? locationIter.next()
-				: g.addVertex(T.label, "location", VERTEX_PROPERTY_LOCATION_FULL_ADDRESS, locationString, "city", city,
-						"state", state, "zip", zip, "country", country);
+
+		DirectedGraph g = gm.getDirectedGraph();
+
+		Optional<Node> findFirst = g.getNodes().toCollection().stream()
+				.filter(n -> n.getAttributeKeys().contains(GraphSchema.VERTEX_PROPERTY_LOCATION_FULL_ADDRESS)
+						&& locationString.equals(n.getAttribute(GraphSchema.VERTEX_PROPERTY_LOCATION_FULL_ADDRESS)))
+				.findFirst();
+
+		Node locationVertex = null;
+		if (findFirst.isPresent()) {
+			locationVertex = findFirst.get();
+		} else {
+			LatLng coords = locationCoordMap.get(locationString);
+			if (null == coords) {
+
+				try {
+					GeocodingApiRequest geocodeRequest = GeocodingApi.newRequest(googleGeoContext);
+					ComponentFilter countryFilter = ComponentFilter.country(country);
+					ComponentFilter localityFilter = ComponentFilter.locality(city);
+					if (!zip.isEmpty()) {
+						ComponentFilter zipFilter = ComponentFilter.postalCode(zip);
+						geocodeRequest.components(countryFilter, localityFilter, zipFilter);
+					} else {
+						geocodeRequest.components(countryFilter, localityFilter);
+					}
+					GeocodingResult[] results = geocodeRequest.await();
+					if (results.length > 0) {
+						coords = results[0].geometry.location;
+						locationCoordMap.put(locationString, coords);
+					}
+				} catch (Exception e) {
+					LOG.log(Level.WARNING, "Unable to determine coordinates for address: " + locationString
+							+ " due to: " + e.getLocalizedMessage(), e);
+				}
+			}
+
+			locationVertex = gm.factory().newNode();
+			locationVertex.setLabel(GraphSchema.VERTEX_LABEL_LOCATION);
+			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_LABEL_V, GraphSchema.VERTEX_LABEL_LOCATION);
+			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_LOCATION_FULL_ADDRESS, locationString);
+			if (coords != null) {
+				locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_LOCATION_LATITUDE, coords.lat);
+				locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_LOCATION_LONGITUDE, coords.lng);
+			}
+			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_ADDRESS_CITY, city);
+			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_ADDRESS_STATE,
+					stateAbbrev.getOrDefault(state, state));
+			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_ADDRESS_ZIP, zip);
+			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_ADDRESS_COUNTRY, country);
+			g.addNode(locationVertex);
+		}
 		return locationVertex;
+
 	}
 
 	/**
 	 * 
-	 * @param g
+	 * @param gm
 	 * @param intv
 	 * @return
 	 */
-	private Vertex getOrCreateIntervention(Graph g, InterventionStruct intv) {
+	private Node getOrCreateIntervention(GraphModel gm, InterventionStruct intv) {
+		DirectedGraph g = gm.getDirectedGraph();
+
 		InterventionTypeEnum iType = intv.getInterventionType();
 		String interventionName = intv.getInterventionName();
-		GraphTraversal<Vertex, Vertex> intvIter = g.traversal().V().has(VERTEX_PROPERTY_INTERVENTION_NAME,
-				interventionName);
-		final Vertex iVt = intvIter.hasNext() ? intvIter.next()
-				: g.addVertex(T.label, "intervention", "intervention_type", iType.toString(),
-						VERTEX_PROPERTY_INTERVENTION_NAME, interventionName);
-		;
+		Optional<Node> findFirst = g.getNodes().toCollection().stream()
+				.filter(n -> n.getAttributeKeys().contains(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_NAME)
+						&& interventionName.equals(n.getAttribute(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_NAME)))
+				.findFirst();
+
+		Node iVt = null;
+		if (findFirst.isPresent()) {
+			iVt = findFirst.get();
+		} else {
+			iVt = gm.factory().newNode();
+			iVt.setLabel(GraphSchema.VERTEX_LABEL_INTERVENTION);
+			iVt.setAttribute(GraphSchema.VERTEX_PROPERTY_LABEL_V, GraphSchema.VERTEX_LABEL_INTERVENTION);
+			iVt.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_TYPE, iType.toString());
+			iVt.setAttribute(GraphSchema.VERTEX_PROPERTY_NCT_INTERVENTION_NAME, interventionName);
+			g.addNode(iVt);
+		}
 		return iVt;
 	}
 
 	/**
 	 * 
-	 * @param g
+	 * @param gm
 	 * @param conditionName
 	 * @return
 	 */
-	private Vertex getOrCreateConditionVertex(Graph g, String conditionName) {
+	private Node getOrCreateConditionVertex(GraphModel gm, String conditionName) {
+		DirectedGraph g = gm.getDirectedGraph();
+
 		String c2 = getNormalizedConditionName(conditionName);
-		GraphTraversal<Vertex, Vertex> conditionIter = g.traversal().V().has(VERTEX_PROPERTY_CONDITION_NAME, c2);
-		final Vertex cVt = conditionIter.hasNext() ? conditionIter.next()
-				: g.addVertex(T.label, "condition", VERTEX_PROPERTY_CONDITION_RAW, conditionName,
-						VERTEX_PROPERTY_CONDITION_NAME, c2);
+		Optional<Node> findFirst = g.getNodes().toCollection().stream()
+				.filter(n -> n.getAttributeKeys().contains(GraphSchema.VERTEX_PROPERTY_CONDITION_NAME)
+						&& c2.equals(n.getAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_NAME)))
+				.findFirst();
+
+		Node cVt = null;
+		if (findFirst.isPresent()) {
+			cVt = findFirst.get();
+		} else {
+			cVt = gm.factory().newNode();
+			cVt.setLabel(GraphSchema.VERTEX_LABEL_CONDITION);
+			cVt.setAttribute(GraphSchema.VERTEX_PROPERTY_LABEL_V, GraphSchema.VERTEX_LABEL_CONDITION);
+			cVt.setAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_RAW, conditionName);
+			cVt.setAttribute(GraphSchema.VERTEX_PROPERTY_CONDITION_NAME, c2);
+			g.addNode(cVt);
+		}
 		return cVt;
 	}
 
 	/**
 	 * 
-	 * @param g
+	 * @param gm
 	 * @param sponsorAgency
 	 * @param agencyClass
 	 * @return
 	 */
-	private Vertex getOrCreateSponsorVertex(Graph g, String sponsorAgency, String agencyClass) {
-		GraphTraversal<Vertex, Vertex> sponsorIter = g.traversal().V().has(VERTEX_PROPERTY_SPONSOR_NAME, sponsorAgency);
-		final Vertex sv = sponsorIter.hasNext() ? sponsorIter.next()
-				: g.addVertex(T.label, "sponsor", VERTEX_PROPERTY_SPONSOR_NAME, sponsorAgency, "class", agencyClass);
+	private Node getOrCreateSponsorVertex(GraphModel gm, String sponsorAgency, String agencyClass) {
+		DirectedGraph g = gm.getDirectedGraph();
+
+		Optional<Node> findFirst = g.getNodes().toCollection().stream()
+				.filter(n -> n.getAttributeKeys().contains(GraphSchema.VERTEX_PROPERTY_SPONSOR_NAME)
+						&& sponsorAgency.equals(n.getAttribute(GraphSchema.VERTEX_PROPERTY_SPONSOR_NAME)))
+				.findFirst();
+
+		Node sv = null;
+		if (findFirst.isPresent()) {
+			sv = findFirst.get();
+		} else {
+			sv = gm.factory().newNode();
+			sv.setLabel(GraphSchema.VERTEX_LABEL_SPONSOR);
+			sv.setAttribute(GraphSchema.VERTEX_PROPERTY_LABEL_V, GraphSchema.VERTEX_LABEL_SPONSOR);
+			sv.setAttribute(GraphSchema.VERTEX_PROPERTY_SPONSOR_NAME, sponsorAgency);
+			sv.setAttribute(GraphSchema.VERTEX_PROPERTY_SPONSOR_CLASS, agencyClass);
+			g.addNode(sv);
+		}
 		return sv;
 	}
 
@@ -441,7 +715,37 @@ public class App {
 		return c3;
 	}
 
+	/**
+	 * 
+	 * @param parm
+	 * @return
+	 */
 	private String getStringOrEmpty(String parm) {
 		return parm != null ? parm : "";
+	}
+
+	private static void createLayoutRunnable(GraphModel gm) {
+		AutoLayout autoLayout = new AutoLayout(100, TimeUnit.SECONDS);
+		LOG.info("Processing layout for " + 100 + " seconds.");
+		autoLayout.setGraphModel(gm);
+		FruchtermanReingold firstLayout = new FruchtermanReingold(null);
+		firstLayout.setGravity(10.0d);
+		firstLayout.setSpeed(1d);
+		firstLayout.setArea(10000f);
+
+		// ForceAtlasLayout secondLayout = new ForceAtlasLayout(null);
+		// AutoLayout.DynamicProperty adjustBySizeProperty = AutoLayout
+		// .createDynamicProperty("forceAtlas.adjustSizes.name", Boolean.TRUE,
+		// 0.1f);// True
+		// // after 10% of layout time
+		// AutoLayout.DynamicProperty repulsionProperty = AutoLayout
+		// .createDynamicProperty("forceAtlas.repulsionStrength.name", new
+		// Double(500.), 0f);// 500
+		// for the complete period
+		// autoLayout.addLayout(secondLayout, 0.5f,
+		// new AutoLayout.DynamicProperty[] { adjustBySizeProperty,
+		// repulsionProperty });
+		autoLayout.addLayout(firstLayout, 1.0f);
+		autoLayout.execute();
 	}
 }
