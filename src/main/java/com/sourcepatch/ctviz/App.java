@@ -9,6 +9,7 @@
 package com.sourcepatch.ctviz;
 
 import java.io.BufferedReader;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -25,6 +26,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
@@ -124,8 +126,11 @@ public class App {
 	 */
 
 	/**
+	 * Applicationentry point
 	 * 
 	 * @param args
+	 *            0 - search term
+	 * 
 	 * @throws Exception
 	 */
 	public static void main(String[] args) throws Exception {
@@ -176,7 +181,7 @@ public class App {
 	 */
 	public void init() throws Exception {
 		loadConditionMaps();
-		loadStateAbbrebiationMap();
+		loadStateAbbreviationMap();
 	}
 
 	/**
@@ -207,7 +212,7 @@ public class App {
 	 * 
 	 * @throws IOException
 	 */
-	public void loadStateAbbrebiationMap() throws IOException {
+	public void loadStateAbbreviationMap() throws IOException {
 
 		try (InputStream resourceAsStream = getClass().getResourceAsStream("/states.csv");
 				InputStreamReader in = new InputStreamReader(resourceAsStream);
@@ -253,7 +258,14 @@ public class App {
 		urlStr += searchTerm;
 		URL url = new URL(urlStr);
 		int trialCount = 0;
-		try (InputStream is = url.openStream(); ZipInputStream zis = new ZipInputStream(is)) {
+		Path target = Files.createTempFile("ct", "zip");
+		try (InputStream is = url.openStream()) {
+			Files.copy(is, target, StandardCopyOption.REPLACE_EXISTING);
+		}
+		LOG.info("NCT download from [" + urlStr + "] complete.");
+
+		LOG.info("Starting graph generation.");
+		try (InputStream is = new FileInputStream(target.toFile()); ZipInputStream zis = new ZipInputStream(is)) {
 
 			/* int entries = 10; */
 			ZipEntry ctXmlEntry = null;
@@ -274,6 +286,8 @@ public class App {
 					trialCount++;
 				}
 			}
+		} finally {
+			Files.delete(target);
 		}
 
 		LOG.info("Processed " + trialCount + " clinical trials into graph. Nodes: " + g.getNodeCount() + ". Edges: "
@@ -482,7 +496,7 @@ public class App {
 
 		// trial -> locations
 		study.getLocation().forEach(l -> {
-			Node locationVertex = getOrCreateLocationVertex(gm, l.getFacility());
+			Node locationVertex = getOrCreateLocationVertex(gm, ctVertex, l.getFacility());
 			String facilityName = getStringOrEmpty(l.getFacility().getName());
 
 			Edge locationEdge = gm.factory().newEdge(ctVertex, locationVertex, true);
@@ -516,10 +530,11 @@ public class App {
 	/**
 	 * 
 	 * @param gm
+	 * @param ctVertex
 	 * @param facility
 	 * @return
 	 */
-	private Node getOrCreateLocationVertex(GraphModel gm, FacilityStruct facility) {
+	private Node getOrCreateLocationVertex(GraphModel gm, Node ctVertex, FacilityStruct facility) {
 		AddressStruct locationAddress = facility.getAddress();
 
 		String city = getStringOrEmpty(locationAddress.getCity());
@@ -576,6 +591,17 @@ public class App {
 					stateAbbrev.getOrDefault(state, state));
 			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_ADDRESS_ZIP, zip);
 			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_ADDRESS_COUNTRY, country);
+
+			// Cloning essential clinical trial fields in case we want to just
+			// plot the view of clinical trials with location and attributes on
+			// a map, without the relations to everything else.
+			Set<String> ctVertexAttrs = ctVertex.getAttributeKeys();
+			for (String ctVertexAttr : ctVertexAttrs) {
+				if (!ctVertexAttr.equals("id")) {
+					locationVertex.setAttribute(ctVertexAttr, ctVertex.getAttribute(ctVertexAttr));
+				}
+			}
+
 			g.addNode(locationVertex);
 		}
 		return locationVertex;
