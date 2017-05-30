@@ -579,6 +579,17 @@ public class App {
 			}
 
 			locationVertex = gm.factory().newNode();
+
+			// Cloning essential clinical trial fields in case we want to just
+			// plot the view of clinical trials with location and attributes on
+			// a map, without the relations to everything else.
+			Set<String> ctVertexAttrs = ctVertex.getAttributeKeys();
+			for (String ctVertexAttr : ctVertexAttrs) {
+				if (!ctVertexAttr.equals("id") && !ctVertexAttr.equals(GraphSchema.VERTEX_PROPERTY_LABEL_V)) {
+					locationVertex.setAttribute(ctVertexAttr, ctVertex.getAttribute(ctVertexAttr));
+				}
+			}
+
 			locationVertex.setLabel(GraphSchema.VERTEX_LABEL_LOCATION);
 			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_LABEL_V, GraphSchema.VERTEX_LABEL_LOCATION);
 			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_LOCATION_FULL_ADDRESS, locationString);
@@ -591,16 +602,6 @@ public class App {
 					stateAbbrev.getOrDefault(state, state));
 			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_ADDRESS_ZIP, zip);
 			locationVertex.setAttribute(GraphSchema.VERTEX_PROPERTY_ADDRESS_COUNTRY, country);
-
-			// Cloning essential clinical trial fields in case we want to just
-			// plot the view of clinical trials with location and attributes on
-			// a map, without the relations to everything else.
-			Set<String> ctVertexAttrs = ctVertex.getAttributeKeys();
-			for (String ctVertexAttr : ctVertexAttrs) {
-				if (!ctVertexAttr.equals("id")) {
-					locationVertex.setAttribute(ctVertexAttr, ctVertex.getAttribute(ctVertexAttr));
-				}
-			}
 
 			g.addNode(locationVertex);
 		}
